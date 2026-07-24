@@ -1,1631 +1,649 @@
-import pyomo.environ as am
+from pathlib import Path
+
 import pandas as pd
+import pyomo.environ as am
 
 # =========================================================
-# 1. DATA INITIALIZATION
+# 1. DATA AND CONFIGURATION
 # =========================================================
 
-years = list(range(1, 11)) 
+YEARS = list(range(1, 11))
+SEASONS = ["S1", "S2"]
+LOAD_ZONES = ["Day", "Night"]
 
-seasons = ['S1', 'S2']
-load_zones = ['Day', 'Night']
+DAYS_PER_SEASON = {"S1": 219, "S2": 146}
+DISCOUNT_RATE = 0.07
+DEMAND_GROWTH = 0.001
 
-days_per_season = {
-    'S1': 219,
-    'S2': 146
+# Carbon policy
+ELEC_EMISSION_FACTOR = 0.570 / 1000.0
+GAS_EMISSION_FACTOR = 0.220 / 1000.0
+CARBON_TAX_PER_TON = 0
+TOTAL_EMISSION_CAP = 5_505_555.0
+
+# Toggle for the 20% efficiency reduction feature
+ENABLE_EFFICIENCY_TECH = False
+
+# Grid data
+GRID_CARRIERS = ["Elec", "Gas"]
+SUB_COST = {"Elec": 2000, "Gas": 3000}
+GRID_PRICE = {"Elec": 0.09, "Gas": 0.03}
+
+# Technology data
+TECHS = ["PV", "CHP", "Boiler", "SplitAC", "EWH"]
+CAP_COST = {
+    "PV": 1000,
+    "CHP": 1500,
+    "Boiler": 300,
+    "SplitAC": 500,
+    "EWH": 120,
 }
-
-discount_rate = 0.07
-demand_growth = 0.001
-
-# Carbon Policy Parameters
-ELEC_EMISSION_FACTOR = 0.570 / 1000.0  # tons/kWh
-GAS_EMISSION_FACTOR = 0.220 / 1000.0   # tons/kWh
-CARBON_TAX_PER_TON = 0                 # $/ton (Change to 83 as asked in the HW)
-TOTAL_EMISSION_CAP = 5505555.0           # target emission limit (tons)
-
-
-#  New Parameter for 20% Efficiency Technology
-enable_efficiency_tech = False  # Toggle this to True for 20% annual reduction in Heat and Cooling
-
-
-# =========================================================
-# GRID DATA
-# =========================================================
-
-grid_carriers = ['Elec', 'Gas']
-
-sub_cost = {
-    'Elec': 2000,
-    'Gas': 3000
+MAINT_COST = {
+    "PV": 15,
+    "CHP": 150,
+    "Boiler": 10,
+    "SplitAC": 20,
+    "EWH": 5,
 }
-
-grid_price = {
-    'Elec': 0.09,
-    'Gas': 0.03
+AF = {
+    "PV": 0.95,
+    "CHP": 0.8,
+    "Boiler": 0.95,
+    "SplitAC": 1.0,
+    "EWH": 0.95,
 }
-
-# =========================================================
-# TECHNOLOGY DATA
-# =========================================================
-
-techs = ['PV', 'CHP', 'Boiler', 'SplitAC', 'EWH']
-
-cap_cost = {
-    'PV': 1000,
-    'CHP': 1500,
-    'Boiler': 300,
-    'SplitAC': 500,
-    'EWH': 120
+LIFESPAN = {
+    "PV": 25,
+    "CHP": 20,
+    "Boiler": 20,
+    "SplitAC": 15,
+    "EWH": 12,
 }
+MIN_CAP = {"PV": 0, "CHP": 100, "Boiler": 10, "SplitAC": 20, "EWH": 10}
+MAX_CAP = {"PV": 100, "CHP": 700, "Boiler": 300, "SplitAC": 1000, "EWH": 3000}
 
-maint_cost = {
-    'PV': 15,
-    'CHP': 150,
-    'Boiler': 10,
-    'SplitAC': 20,
-    'EWH': 5
+# Efficiencies
+BOILER_EFF = 0.90
+CHP_ELEC_EFF = 0.35
+CHP_HEAT_EFF = 0.50
+SPLITAC_COP = 3.2
+EWH_EFF = 0.97
+
+# CHP polygon region
+PT_A = (100, 720)
+PT_B = (100, 200)
+PT_C = (300, 560)
+PT_D = (300, 100)
+
+M_TOP = (PT_C[1] - PT_A[1]) / (PT_C[0] - PT_A[0])
+B_TOP = PT_A[1] - M_TOP * PT_A[0]
+M_BOT = (PT_D[1] - PT_B[1]) / (PT_D[0] - PT_B[0])
+B_BOT = PT_B[1] - M_BOT * PT_B[0]
+
+# Demand data: (Electricity, Heat, Cooling, SolarCF)
+DEMAND_DATA = {
+    ("S1", "Day"): (180, 20, 160, 0.26),
+    ("S1", "Night"): (120, 0, 60, 0),
+    ("S2", "Day"): (180, 200, 0, 0.12),
+    ("S2", "Night"): (120, 140, 0, 0),
 }
-
-af = {
-    'PV': 0.95,
-    'CHP': 0.8,
-    'Boiler': 0.95,
-    'SplitAC': 1.0,
-    'EWH': 0.95
-}
-
-lifespan = {
-    'PV': 25,
-    'CHP': 20,
-    'Boiler': 20,
-    'SplitAC': 15,
-    'EWH': 12
-}
-
-min_cap = {
-    'PV': 0,
-    'CHP': 100,
-    'Boiler': 10,
-    'SplitAC': 20,
-    'EWH': 10
-}
-
-max_cap = {
-    'PV': 100,
-    'CHP': 700,
-    'Boiler': 300,
-    'SplitAC': 1000,
-    'EWH': 3000
-}
-
-# =========================================================
-# EFFICIENCIES
-# =========================================================
-
-boiler_eff = 0.90
-
-# FIXED CHP EFFICIENCIES
-chp_elec_eff = 0.35
-chp_heat_eff = 0.50
-
-splitac_cop = 3.2
-ewh_eff = 0.97
-
-# =========================================================
-# CHP POLYGON REGION
-# =========================================================
-
-pt_a = (100, 720)
-pt_b = (100, 200)
-
-pt_c = (300, 560)
-pt_d = (300, 100)
-
-m_top = (pt_c[1] - pt_a[1]) / (pt_c[0] - pt_a[0])
-b_top = pt_a[1] - m_top * pt_a[0]
-
-m_bot = (pt_d[1] - pt_b[1]) / (pt_d[0] - pt_b[0])
-b_bot = pt_b[1] - m_bot * pt_b[0]
-
-# =========================================================
-# DEMAND DATA
-# =========================================================
-
-# Format:
-# (Electricity, Heat, Cooling, SolarCF)
-
-demand_data = {
-    ('S1', 'Day'):   (180, 20, 160, 0.26),
-    ('S1', 'Night'): (120, 0, 60, 0),
-    ('S2', 'Day'):   (180, 200, 0, 0.12),
-    ('S2', 'Night'): (120, 140, 0, 0)
-}
-
-# =========================================================
-# 2. MODEL
-# =========================================================
-
-model = am.ConcreteModel()
-
-# =========================================================
-# SETS
-# =========================================================
-
-model.T = am.Set(initialize=years)
-model.W = am.Set(initialize=years)
-
-model.S = am.Set(initialize=seasons)
-model.L = am.Set(initialize=load_zones)
-
-model.Tech = am.Set(initialize=techs)
-model.Carrier = am.Set(initialize=grid_carriers)
-
-# =========================================================
-# VARIABLES
-# =========================================================
-
-model.u_grid = am.Var(
-    model.Carrier,
-    domain=am.Binary
-)
-
-model.u_tech = am.Var(
-    model.Tech,
-    model.W,
-    domain=am.Binary
-)
-
-model.y_tech = am.Var(
-    model.Tech,
-    model.W,
-    domain=am.NonNegativeReals
-)
-
-model.x_tech = am.Var(
-    model.Tech,
-    model.T,
-    model.S,
-    model.L,
-    domain=am.NonNegativeReals
-)
-
-model.p_chp = am.Var(
-    model.T,
-    model.S,
-    model.L,
-    domain=am.NonNegativeReals
-)
-
-model.q_chp = am.Var(
-    model.T,
-    model.S,
-    model.L,
-    domain=am.NonNegativeReals
-)
-
-model.u_chp_on = am.Var(
-    model.T,
-    model.S,
-    model.L,
-    domain=am.Binary
-)
-
-model.purchased = am.Var(
-    model.Carrier,
-    model.T,
-    model.S,
-    model.L,
-    domain=am.NonNegativeReals
-)
-
-model.u_used = am.Var(
-    model.Tech,
-    model.T,
-    domain=am.Binary
-)
-
-model.chp_gas = am.Var(
-    model.T,
-    model.S,
-    model.L,
-    domain=am.NonNegativeReals
-)
-
-# =========================================================
-# LINEARIZED O&M VARIABLE
-# =========================================================
-
-model.active_cap_used = am.Var(
-    model.Tech,
-    model.T,
-    domain=am.NonNegativeReals
-)
-
-# =========================================================
-# OBJECTIVE FUNCTION
-# =========================================================
-
-def obj_rule(m):
-
-    subs = sum(
-        m.u_grid[c] * sub_cost[c]
-        for c in m.Carrier
-    )
-
-    cap_exp = sum(
-
-        (1 / (1 + discount_rate) ** w)
-
-        *
-
-        sum(
-            m.y_tech[tech, w] * cap_cost[tech]
-            for tech in m.Tech
-        )
-
-        for w in m.W
-    )
-
-    maint = sum(
-
-        (1 / (1 + discount_rate) ** t)
-
-        *
-
-        sum(
-
-            maint_cost[tech]
-            *
-            m.active_cap_used[tech, t]
-
-            for tech in m.Tech
-        )
-
-        for t in m.T
-    )
-
-    fuel = sum(
-
-        (1 / (1 + discount_rate) ** t)
-
-        *
-
-        sum(
-
-            days_per_season[s]
-
-            *
-
-            sum(
-
-                m.purchased[c, t, s, l]
-                *
-                grid_price[c]
-
-                for c in m.Carrier
-                for l in m.L
-            )
-
-            for s in m.S
-        )
-
-        for t in m.T
-    )
-
-    # --- Carbon Tax Cost Calculation ---
-    carbon_cost = sum(
-        days_per_season[s] * (
-            m.purchased['Elec', t, s, l] * ELEC_EMISSION_FACTOR +
-            m.purchased['Gas', t, s, l] * GAS_EMISSION_FACTOR
-        ) * CARBON_TAX_PER_TON
-        for t in m.T for s in m.S for l in m.L
-    )
-
-    return subs + cap_exp + maint + fuel + carbon_cost
-
-
-model.obj = am.Objective(
-    rule=obj_rule,
-    sense=am.minimize
-)
-
-# =========================================================
-# CONSTANTS
-# =========================================================
 
 BIG_M = 1e6
 EPS = 0
+OUTPUT_FILE = Path("energy_system_results_FULL.xlsx")
+
 
 # =========================================================
-# SINGLE INSTALLATION
+# 2. MODEL CONSTRUCTION
 # =========================================================
 
-def single_install_rule(m, tech):
+def build_model():
+    model = am.ConcreteModel()
 
-    return sum(
-        m.u_tech[tech, w]
+    model.T = am.Set(initialize=YEARS)
+    model.W = am.Set(initialize=YEARS)
+    model.S = am.Set(initialize=SEASONS)
+    model.L = am.Set(initialize=LOAD_ZONES)
+    model.Tech = am.Set(initialize=TECHS)
+    model.Carrier = am.Set(initialize=GRID_CARRIERS)
+
+    model.u_grid = am.Var(model.Carrier, domain=am.Binary)
+    model.u_tech = am.Var(model.Tech, model.W, domain=am.Binary)
+    model.y_tech = am.Var(model.Tech, model.W, domain=am.NonNegativeReals)
+    model.x_tech = am.Var(model.Tech, model.T, model.S, model.L, domain=am.NonNegativeReals)
+    model.p_chp = am.Var(model.T, model.S, model.L, domain=am.NonNegativeReals)
+    model.q_chp = am.Var(model.T, model.S, model.L, domain=am.NonNegativeReals)
+    model.u_chp_on = am.Var(model.T, model.S, model.L, domain=am.Binary)
+    model.purchased = am.Var(model.Carrier, model.T, model.S, model.L, domain=am.NonNegativeReals)
+    model.u_used = am.Var(model.Tech, model.T, domain=am.Binary)
+    model.chp_gas = am.Var(model.T, model.S, model.L, domain=am.NonNegativeReals)
+    model.active_cap_used = am.Var(model.Tech, model.T, domain=am.NonNegativeReals)
+
+    model.obj = am.Objective(rule=objective_rule, sense=am.minimize)
+
+    add_single_install_constraints(model)
+    add_capacity_bounds(model)
+    add_activity_limit_constraints(model)
+    add_operation_if_installed_constraints(model)
+    add_usage_activation_constraints(model)
+    add_active_cap_constraints(model)
+    add_electricity_balance_constraints(model)
+    add_heat_balance_constraints(model)
+    add_cooling_balance_constraints(model)
+    add_gas_balance_constraints(model)
+    add_chp_fuel_constraints(model)
+    add_chp_constraints(model)
+    add_grid_access_constraints(model)
+    add_grid_subscription_constraints(model)
+    add_emission_limit_constraint(model)
+
+    return model
+
+
+def objective_rule(m):
+    subscription_cost = sum(m.u_grid[c] * SUB_COST[c] for c in m.Carrier)
+
+    capital_cost = sum(
+        (1 / (1 + DISCOUNT_RATE) ** w)
+        * sum(m.y_tech[tech, w] * CAP_COST[tech] for tech in m.Tech)
         for w in m.W
-    ) <= 1
-
-
-model.c_single_install = am.Constraint(
-    model.Tech,
-    rule=single_install_rule
-)
-
-# =========================================================
-# CAPACITY BOUNDS
-# =========================================================
-
-model.c_cap_bounds = am.ConstraintList()
-
-for tech in techs:
-
-    for w in years:
-
-        model.c_cap_bounds.add(
-            model.y_tech[tech, w]
-            >=
-            min_cap[tech]
-            * model.u_tech[tech, w]
-        )
-
-        model.c_cap_bounds.add(
-            model.y_tech[tech, w]
-            <=
-            max_cap[tech]
-            * model.u_tech[tech, w]
-        )
-
-# =========================================================
-# ACTIVITY LIMITS
-# =========================================================
-
-def activity_limit_rule(m, tech, t, s, l):
-
-    active_cap = sum(
-        m.y_tech[tech, w]
-        for w in m.W
-        if w <= t and t < w + lifespan[tech]
     )
 
-    if tech == 'CHP':
-
-        return am.Constraint.Skip
-
-    elif tech == 'PV':
-
-        return (
-            m.x_tech[tech, t, s, l]
-            <=
-            active_cap
-            *
-            af[tech]
-            *
-            demand_data[s, l][3]
-        )
-
-    else:
-
-        return (
-            m.x_tech[tech, t, s, l]
-            <=
-            active_cap
-            *
-            af[tech]
-        )
-
-
-model.c_activity_limit = am.Constraint(
-    model.Tech,
-    model.T,
-    model.S,
-    model.L,
-    rule=activity_limit_rule
-)
-
-# =========================================================
-# FORCE OPERATION ONLY IF INSTALLED
-# =========================================================
-
-model.c_operation_if_installed = am.ConstraintList()
-
-for tech in techs:
-
-    if tech == 'CHP':
-        continue
-
-    for t in years:
-
-        active_cap = sum(
-            model.y_tech[tech, w]
-            for w in years
-            if w <= t and t < w + lifespan[tech]
-        )
-
-        for s in seasons:
-
-            for l in load_zones:
-
-                model.c_operation_if_installed.add(
-                    model.x_tech[tech, t, s, l]
-                    <=
-                    active_cap
-                )
-
-# =========================================================
-# TECHNOLOGY USAGE ACTIVATION
-# =========================================================
-
-model.c_usage_activation = am.ConstraintList()
-
-for tech in techs:
-
-    for t in years:
-
-        if tech == 'CHP':
-
-            total_use = sum(
-                model.p_chp[t, s, l]
-                +
-                model.q_chp[t, s, l]
-                for s in seasons
-                for l in load_zones
-            )
-
-        else:
-
-            total_use = sum(
-                model.x_tech[tech, t, s, l]
-                for s in seasons
-                for l in load_zones
-            )
-
-        model.c_usage_activation.add(
-            total_use
-            <=
-            BIG_M * model.u_used[tech, t]
-        )
-
-        model.c_usage_activation.add(
-            total_use
-            >=
-            EPS * model.u_used[tech, t]
-        )
-
-# =========================================================
-# LINEARIZED O&M CONSTRAINTS
-# =========================================================
-
-model.c_active_cap_used = am.ConstraintList()
-
-for tech in techs:
-
-    for t in years:
-
-        active_cap = sum(
-            model.y_tech[tech, w]
-            for w in years
-            if w <= t and t < w + lifespan[tech]
-        )
-
-        model.c_active_cap_used.add(
-            model.active_cap_used[tech, t]
-            <=
-            active_cap
-        )
-
-        model.c_active_cap_used.add(
-            model.active_cap_used[tech, t]
-            <=
-            max_cap[tech]
-            * model.u_used[tech, t]
-        )
-
-        model.c_active_cap_used.add(
-            model.active_cap_used[tech, t]
-            >=
-            active_cap
-            -
-            max_cap[tech]
-            *
-            (
-                1 - model.u_used[tech, t]
-            )
-        )
-
-# =========================================================
-# ELECTRICITY BALANCE
-# =========================================================
-
-def elec_balance_rule(m, t, s, l):
-
-    growth = 1
-
-    supply = (
-
-        m.x_tech['PV', t, s, l]
-
-        +
-
-        m.p_chp[t, s, l]
-
-        +
-
-        m.purchased['Elec', t, s, l]
+    maintenance_cost = sum(
+        (1 / (1 + DISCOUNT_RATE) ** t)
+        * sum(MAINT_COST[tech] * m.active_cap_used[tech, t] for tech in m.Tech)
+        for t in m.T
     )
 
-    demand = (
-
-        demand_data[s, l][0]
-
-        +
-
-        (
-            m.x_tech['SplitAC', t, s, l]
-            / splitac_cop
+    fuel_cost = sum(
+        (1 / (1 + DISCOUNT_RATE) ** t)
+        * sum(
+            DAYS_PER_SEASON[s]
+            * sum(m.purchased[c, t, s, l] * GRID_PRICE[c] for c in m.Carrier for l in m.L)
+            for s in m.S
         )
+        for t in m.T
+    )
 
-        +
-
-        (
-            m.x_tech['EWH', t, s, l]
-            / ewh_eff
+    carbon_cost = sum(
+        DAYS_PER_SEASON[s]
+        * (
+            m.purchased["Elec", t, s, l] * ELEC_EMISSION_FACTOR
+            + m.purchased["Gas", t, s, l] * GAS_EMISSION_FACTOR
         )
-    )
-
-    return supply >= demand
-
-
-model.c_elec_balance = am.Constraint(
-    model.T,
-    model.S,
-    model.L,
-    rule=elec_balance_rule
-)
-
-# =========================================================
-# HEAT BALANCE
-# =========================================================
-
-def heat_balance_rule(m, t, s, l):
-
-    growth = (1 + demand_growth) ** (t - 1)
-
-    # --- Efficiency Reduction Factor ---
-    red_factor = 1.0
-    if enable_efficiency_tech and t >= 5:
-        red_factor = 0.8 ** (t - 4)
-    # -----------------------------------
-
-    supply = (
-
-        m.q_chp[t, s, l]
-
-        +
-
-        m.x_tech['Boiler', t, s, l]
-
-        +
-
-        m.x_tech['EWH', t, s, l]
-    )
-
-    demand = demand_data[s, l][1] * growth * red_factor
-
-    return supply >= demand
-
-
-model.c_heat_balance = am.Constraint(
-    model.T,
-    model.S,
-    model.L,
-    rule=heat_balance_rule
-)
-
-# =========================================================
-# COOLING BALANCE
-# =========================================================
-
-def cool_balance_rule(m, t, s, l):
-
-    growth = (1 + demand_growth) ** (t - 1)
-
-    # --- Efficiency Reduction Factor ---
-    red_factor = 1.0
-    if enable_efficiency_tech and t >= 5:
-        red_factor = 0.8 ** (t - 4)
-    # -----------------------------------
-
-    return (
-        m.x_tech['SplitAC', t, s, l]
-        >=
-        demand_data[s, l][2] * growth * red_factor
-    )
-
-
-model.c_cool_balance = am.Constraint(
-    model.T,
-    model.S,
-    model.L,
-    rule=cool_balance_rule
-)
-
-# =========================================================
-# GAS BALANCE
-# =========================================================
-
-def gas_balance_rule(m, t, s, l):
-
-    boiler_gas = (
-        m.x_tech['Boiler', t, s, l]
-        / boiler_eff
-    )
-
-    return (
-
-        m.purchased['Gas', t, s, l]
-
-        ==
-
-        boiler_gas
-
-        +
-
-        m.chp_gas[t, s, l]
-    )
-
-
-model.c_gas_balance = am.Constraint(
-    model.T,
-    model.S,
-    model.L,
-    rule=gas_balance_rule
-)
-
-# =========================================================
-# CHP FUEL CONSUMPTION
-# =========================================================
-
-def chp_fuel_rule(m, t, s, l):
-
-    return (
-        m.chp_gas[t, s, l]
-        ==
-        (
-            m.p_chp[t, s, l] / chp_elec_eff
-        )
-        +
-        (
-            m.q_chp[t, s, l] / chp_heat_eff
-        )
-    )
-
-model.c_chp_fuel = am.Constraint(
-    model.T,
-    model.S,
-    model.L,
-    rule=chp_fuel_rule
-)
-
-# =========================================================
-# CHP CONSTRAINTS
-# =========================================================
-
-model.c_chp = am.ConstraintList()
-
-for t in years:
-
-    for s in seasons:
-
-        for l in load_zones:
-
-            active_chp = sum(
-                model.y_tech['CHP', w]
-                for w in years
-                if w <= t and t < w + lifespan['CHP']
-            )
-
-            model.c_chp.add(
-                model.p_chp[t, s, l]
-                <=
-                BIG_M * model.u_chp_on[t, s, l]
-            )
-
-            model.c_chp.add(
-                model.q_chp[t, s, l]
-                <=
-                BIG_M * model.u_chp_on[t, s, l]
-            )
-
-            model.c_chp.add(
-                active_chp
-                >=
-                EPS * model.u_chp_on[t, s, l]
-            )
-
-            model.c_chp.add(
-                model.p_chp[t, s, l]
-                >=
-                100 * model.u_chp_on[t, s, l]
-            )
-
-            model.c_chp.add(
-                model.p_chp[t, s, l]
-                <=
-                300 * model.u_chp_on[t, s, l]
-            )
-
-            model.c_chp.add(
-                model.p_chp[t, s, l]
-                +
-                model.q_chp[t, s, l]
-                <=
-                active_chp * af['CHP']
-            )
-
-            model.c_chp.add(
-                model.q_chp[t, s, l]
-                <=
-                (
-                    m_top
-                    *
-                    model.p_chp[t, s, l]
-                    +
-                    b_top
-                )
-            )
-
-            model.c_chp.add(
-                model.q_chp[t, s, l]
-                >=
-                (
-                    m_bot
-                    *
-                    model.p_chp[t, s, l]
-                    +
-                    b_bot
-                    -
-                    BIG_M
-                    *
-                    (
-                        1 - model.u_chp_on[t, s, l]
-                    )
-                )
-            )
-
-# =========================================================
-# GRID ACCESS
-# =========================================================
-
-def grid_access_rule(m, c, t, s, l):
-
-    return (
-        m.purchased[c, t, s, l]
-        <=
-        BIG_M * m.u_grid[c]
-    )
-
-
-model.c_grid_access = am.Constraint(
-    model.Carrier,
-    model.T,
-    model.S,
-    model.L,
-    rule=grid_access_rule
-)
-
-# =========================================================
-# FORCE GRID SUBSCRIPTION ONLY IF USED
-# =========================================================
-
-model.c_grid_use = am.ConstraintList()
-
-for c in grid_carriers:
-
-    total_purchase = sum(
-        model.purchased[c, t, s, l]
-        for t in years
-        for s in seasons
-        for l in load_zones
-    )
-
-    model.c_grid_use.add(
-        total_purchase
-        <=
-        BIG_M * model.u_grid[c]
-    )
-
-    model.c_grid_use.add(
-        total_purchase
-        >=
-        EPS * model.u_grid[c]
-    )
-
-# =========================================================
-# EMISSION LIMIT CONSTRAINT
-# =========================================================
-
-def emission_limit_rule(m):
-    total_emissions = sum(
-        days_per_season[s] * (
-            m.purchased['Elec', t, s, l] * ELEC_EMISSION_FACTOR +
-            m.purchased['Gas', t, s, l] * GAS_EMISSION_FACTOR
-        )
+        * CARBON_TAX_PER_TON
         for t in m.T for s in m.S for l in m.L
     )
-    return total_emissions <= TOTAL_EMISSION_CAP
 
-model.c_emission_limit = am.Constraint(
-    rule=emission_limit_rule
-)
-
-# =========================================================
-# SOLVER
-# =========================================================
-
-solver = am.SolverFactory('highs')
-
-results = solver.solve(
-    model,
-    tee=True
-)
-
-# =========================================================
-# RESULTS
-# =========================================================
-
-print("\n========================================")
-print("OPTIMIZATION COMPLETED")
-print("========================================")
-
-print(f"\nObjective Value = {am.value(model.obj):,.2f}")
+    return subscription_cost + capital_cost + maintenance_cost + fuel_cost + carbon_cost
 
 
-subs_cost_val = sum(
-    am.value(model.u_grid[c]) * sub_cost[c]
-    for c in grid_carriers
-)
+def add_single_install_constraints(model):
+    def rule(m, tech):
+        return sum(m.u_tech[tech, w] for w in m.W) <= 1
 
-cap_cost_val = sum(
+    model.c_single_install = am.Constraint(model.Tech, rule=rule)
 
-    (1 / (1 + discount_rate) ** w)
 
-    *
+def add_capacity_bounds(model):
+    model.c_cap_bounds = am.ConstraintList()
+    for tech in TECHS:
+        for w in YEARS:
+            model.c_cap_bounds.add(model.y_tech[tech, w] >= MIN_CAP[tech] * model.u_tech[tech, w])
+            model.c_cap_bounds.add(model.y_tech[tech, w] <= MAX_CAP[tech] * model.u_tech[tech, w])
 
-    sum(
-        am.value(model.y_tech[tech, w]) * cap_cost[tech]
-        for tech in techs
-    )
 
-    for w in years
-)
+def active_capacity(model, tech, t):
+    return sum(model.y_tech[tech, w] for w in YEARS if w <= t and t < w + LIFESPAN[tech])
 
-maint_cost_val = sum(
 
-    (1 / (1 + discount_rate) ** t)
+def add_activity_limit_constraints(model):
+    def rule(m, tech, t, s, l):
+        active_cap = active_capacity(m, tech, t)
+        if tech == "CHP":
+            return am.Constraint.Skip
+        if tech == "PV":
+            return m.x_tech[tech, t, s, l] <= active_cap * AF[tech] * DEMAND_DATA[s, l][3]
+        return m.x_tech[tech, t, s, l] <= active_cap * AF[tech]
 
-    *
+    model.c_activity_limit = am.Constraint(model.Tech, model.T, model.S, model.L, rule=rule)
 
-    sum(
 
-        maint_cost[tech]
-        *
-        am.value(model.active_cap_used[tech, t])
+def add_operation_if_installed_constraints(model):
+    model.c_operation_if_installed = am.ConstraintList()
+    for tech in TECHS:
+        if tech == "CHP":
+            continue
+        for t in YEARS:
+            active_cap = active_capacity(model, tech, t)
+            for s in SEASONS:
+                for l in LOAD_ZONES:
+                    model.c_operation_if_installed.add(model.x_tech[tech, t, s, l] <= active_cap)
 
-        for tech in techs
-    )
 
-    for t in years
-)
+def add_usage_activation_constraints(model):
+    model.c_usage_activation = am.ConstraintList()
+    for tech in TECHS:
+        for t in YEARS:
+            if tech == "CHP":
+                total_use = sum(model.p_chp[t, s, l] + model.q_chp[t, s, l] for s in SEASONS for l in LOAD_ZONES)
+            else:
+                total_use = sum(model.x_tech[tech, t, s, l] for s in SEASONS for l in LOAD_ZONES)
 
-fuel_cost_val = sum(
+            model.c_usage_activation.add(total_use <= BIG_M * model.u_used[tech, t])
+            model.c_usage_activation.add(total_use >= EPS * model.u_used[tech, t])
 
-    (1 / (1 + discount_rate) ** t)
 
-    *
+def add_active_cap_constraints(model):
+    model.c_active_cap_used = am.ConstraintList()
+    for tech in TECHS:
+        for t in YEARS:
+            active_cap = active_capacity(model, tech, t)
+            model.c_active_cap_used.add(model.active_cap_used[tech, t] <= active_cap)
+            model.c_active_cap_used.add(model.active_cap_used[tech, t] <= MAX_CAP[tech] * model.u_used[tech, t])
+            model.c_active_cap_used.add(model.active_cap_used[tech, t] >= active_cap - MAX_CAP[tech] * (1 - model.u_used[tech, t]))
 
-    sum(
 
-        days_per_season[s]
+def add_electricity_balance_constraints(model):
+    def rule(m, t, s, l):
+        supply = m.x_tech["PV", t, s, l] + m.p_chp[t, s, l] + m.purchased["Elec", t, s, l]
+        demand = DEMAND_DATA[s, l][0] + m.x_tech["SplitAC", t, s, l] / SPLITAC_COP + m.x_tech["EWH", t, s, l] / EWH_EFF
+        return supply >= demand
 
-        *
+    model.c_elec_balance = am.Constraint(model.T, model.S, model.L, rule=rule)
 
-        sum(
 
-            am.value(model.purchased[c, t, s, l])
-            *
-            grid_price[c]
+def add_heat_balance_constraints(model):
+    def rule(m, t, s, l):
+        growth = (1 + DEMAND_GROWTH) ** (t - 1)
+        red_factor = 1.0
+        if ENABLE_EFFICIENCY_TECH and t >= 5:
+            red_factor = 0.8 ** (t - 4)
+        supply = m.q_chp[t, s, l] + m.x_tech["Boiler", t, s, l] + m.x_tech["EWH", t, s, l]
+        demand = DEMAND_DATA[s, l][1] * growth * red_factor
+        return supply >= demand
 
-            for c in grid_carriers
-            for l in load_zones
+    model.c_heat_balance = am.Constraint(model.T, model.S, model.L, rule=rule)
+
+
+def add_cooling_balance_constraints(model):
+    def rule(m, t, s, l):
+        growth = (1 + DEMAND_GROWTH) ** (t - 1)
+        red_factor = 1.0
+        if ENABLE_EFFICIENCY_TECH and t >= 5:
+            red_factor = 0.8 ** (t - 4)
+        return m.x_tech["SplitAC", t, s, l] >= DEMAND_DATA[s, l][2] * growth * red_factor
+
+    model.c_cool_balance = am.Constraint(model.T, model.S, model.L, rule=rule)
+
+
+def add_gas_balance_constraints(model):
+    def rule(m, t, s, l):
+        boiler_gas = m.x_tech["Boiler", t, s, l] / BOILER_EFF
+        return m.purchased["Gas", t, s, l] == boiler_gas + m.chp_gas[t, s, l]
+
+    model.c_gas_balance = am.Constraint(model.T, model.S, model.L, rule=rule)
+
+
+def add_chp_fuel_constraints(model):
+    def rule(m, t, s, l):
+        return m.chp_gas[t, s, l] == m.p_chp[t, s, l] / CHP_ELEC_EFF + m.q_chp[t, s, l] / CHP_HEAT_EFF
+
+    model.c_chp_fuel = am.Constraint(model.T, model.S, model.L, rule=rule)
+
+
+def add_chp_constraints(model):
+    model.c_chp = am.ConstraintList()
+    for t in YEARS:
+        for s in SEASONS:
+            for l in LOAD_ZONES:
+                active_chp = active_capacity(model, "CHP", t)
+                model.c_chp.add(model.p_chp[t, s, l] <= BIG_M * model.u_chp_on[t, s, l])
+                model.c_chp.add(model.q_chp[t, s, l] <= BIG_M * model.u_chp_on[t, s, l])
+                model.c_chp.add(active_chp >= EPS * model.u_chp_on[t, s, l])
+                model.c_chp.add(model.p_chp[t, s, l] >= 100 * model.u_chp_on[t, s, l])
+                model.c_chp.add(model.p_chp[t, s, l] <= 300 * model.u_chp_on[t, s, l])
+                model.c_chp.add(model.p_chp[t, s, l] + model.q_chp[t, s, l] <= active_chp * AF["CHP"])
+                model.c_chp.add(model.q_chp[t, s, l] <= M_TOP * model.p_chp[t, s, l] + B_TOP)
+                model.c_chp.add(model.q_chp[t, s, l] >= M_BOT * model.p_chp[t, s, l] + B_BOT - BIG_M * (1 - model.u_chp_on[t, s, l]))
+
+
+def add_grid_access_constraints(model):
+    def rule(m, c, t, s, l):
+        return m.purchased[c, t, s, l] <= BIG_M * m.u_grid[c]
+
+    model.c_grid_access = am.Constraint(model.Carrier, model.T, model.S, model.L, rule=rule)
+
+
+def add_grid_subscription_constraints(model):
+    model.c_grid_use = am.ConstraintList()
+    for c in GRID_CARRIERS:
+        total_purchase = sum(model.purchased[c, t, s, l] for t in YEARS for s in SEASONS for l in LOAD_ZONES)
+        model.c_grid_use.add(total_purchase <= BIG_M * model.u_grid[c])
+        model.c_grid_use.add(total_purchase >= EPS * model.u_grid[c])
+
+
+def add_emission_limit_constraint(model):
+    def rule(m):
+        total_emissions = sum(
+            DAYS_PER_SEASON[s]
+            * (
+                m.purchased["Elec", t, s, l] * ELEC_EMISSION_FACTOR
+                + m.purchased["Gas", t, s, l] * GAS_EMISSION_FACTOR
+            )
+            for t in m.T for s in m.S for l in m.L
         )
+        return total_emissions <= TOTAL_EMISSION_CAP
 
-        for s in seasons
-    )
+    model.c_emission_limit = am.Constraint(rule=rule)
 
-    for t in years
-)
-
-# --- Carbon Cost and Total Emissions for Export ---
-carbon_cost_val = sum(
-    days_per_season[s] * (
-        am.value(model.purchased['Elec', t, s, l]) * ELEC_EMISSION_FACTOR +
-        am.value(model.purchased['Gas', t, s, l]) * GAS_EMISSION_FACTOR
-    ) * CARBON_TAX_PER_TON
-    for t in years for s in seasons for l in load_zones
-)
-
-total_emissions_val = sum(
-    days_per_season[s] * (
-        am.value(model.purchased['Elec', t, s, l]) * ELEC_EMISSION_FACTOR +
-        am.value(model.purchased['Gas', t, s, l]) * GAS_EMISSION_FACTOR
-    )
-    for t in years for s in seasons for l in load_zones
-)
-
-
-objective_breakdown_df = pd.DataFrame([{
-
-    'Subscription Cost': subs_cost_val,
-    'Capital Cost': cap_cost_val,
-    'O&M Cost': maint_cost_val,
-    'Fuel Cost': fuel_cost_val,
-    'Carbon Tax Cost': carbon_cost_val,
-    'Total Objective': am.value(model.obj),
-    'Total Emissions (tons)': total_emissions_val
-}])
 
 # =========================================================
-# INSTALLED CAPACITY
+# 3. SOLVE AND REPORT
 # =========================================================
 
-capacity_rows = []
+def solve_model(model):
+    solver = am.SolverFactory("highs")
+    return solver.solve(model, tee=True)
 
-for tech in techs:
 
-    for w in years:
+def _zero_small_values(frame):
+    return frame.map(lambda value: 0 if isinstance(value, (int, float)) and abs(value) < 1e-6 else value)
 
-        val = am.value(model.y_tech[tech, w])
 
-        if val is not None and val > 1e-6:
+def summarize_results(model):
+    subscription_cost = sum(am.value(model.u_grid[c]) * SUB_COST[c] for c in GRID_CARRIERS)
 
-            capacity_rows.append({
+    capital_cost = sum(
+        (1 / (1 + DISCOUNT_RATE) ** w)
+        * sum(am.value(model.y_tech[tech, w]) * CAP_COST[tech] for tech in TECHS)
+        for w in YEARS
+    )
 
-                'Technology': tech,
-                'Install Year': w,
-                'Installed Capacity': val,
-                'Lifetime': lifespan[tech]
+    maintenance_cost = sum(
+        (1 / (1 + DISCOUNT_RATE) ** t)
+        * sum(MAINT_COST[tech] * am.value(model.active_cap_used[tech, t]) for tech in TECHS)
+        for t in YEARS
+    )
+
+    fuel_cost = sum(
+        (1 / (1 + DISCOUNT_RATE) ** t)
+        * sum(
+            DAYS_PER_SEASON[s]
+            * sum(am.value(model.purchased[c, t, s, l]) * GRID_PRICE[c] for c in GRID_CARRIERS for l in LOAD_ZONES)
+            for s in SEASONS
+        )
+        for t in YEARS
+    )
+
+    carbon_cost = sum(
+        DAYS_PER_SEASON[s]
+        * (
+            am.value(model.purchased["Elec", t, s, l]) * ELEC_EMISSION_FACTOR
+            + am.value(model.purchased["Gas", t, s, l]) * GAS_EMISSION_FACTOR
+        )
+        * CARBON_TAX_PER_TON
+        for t in YEARS for s in SEASONS for l in LOAD_ZONES
+    )
+
+    total_emissions = sum(
+        DAYS_PER_SEASON[s]
+        * (
+            am.value(model.purchased["Elec", t, s, l]) * ELEC_EMISSION_FACTOR
+            + am.value(model.purchased["Gas", t, s, l]) * GAS_EMISSION_FACTOR
+        )
+        for t in YEARS for s in SEASONS for l in LOAD_ZONES
+    )
+
+    objective_breakdown_df = pd.DataFrame([{
+        "Subscription Cost": subscription_cost,
+        "Capital Cost": capital_cost,
+        "O&M Cost": maintenance_cost,
+        "Fuel Cost": fuel_cost,
+        "Carbon Tax Cost": carbon_cost,
+        "Total Objective": am.value(model.obj),
+        "Total Emissions (tons)": total_emissions,
+    }])
+
+    capacity_rows = []
+    for tech in TECHS:
+        for w in YEARS:
+            val = am.value(model.y_tech[tech, w])
+            if val is not None and val > 1e-6:
+                capacity_rows.append({
+                    "Technology": tech,
+                    "Install Year": w,
+                    "Installed Capacity": val,
+                    "Lifetime": LIFESPAN[tech],
+                })
+    capacity_df = pd.DataFrame(capacity_rows)
+
+    om_rows = []
+    for t in YEARS:
+        for tech in TECHS:
+            active_cap = active_capacity(model, tech, t)
+            used_cap = am.value(model.active_cap_used[tech, t])
+            om_paid = MAINT_COST[tech] * used_cap
+            discounted_om = om_paid * (1 / (1 + DISCOUNT_RATE) ** t)
+            om_rows.append({
+                "Year": t,
+                "Technology": tech,
+                "Installed Active Capacity": active_cap,
+                "Used Capacity Paying O&M": used_cap,
+                "O&M Cost": om_paid,
+                "Discounted O&M Cost": discounted_om,
             })
+    om_df = pd.DataFrame(om_rows)
 
-capacity_df = pd.DataFrame(capacity_rows)
+    operation_rows = []
+    for t in YEARS:
+        growth = (1 + DEMAND_GROWTH) ** (t - 1)
+        red_factor = 1.0
+        if ENABLE_EFFICIENCY_TECH and t >= 5:
+            red_factor = 0.8 ** (t - 4)
 
-# =========================================================
-# YEARLY O&M COSTS
-# =========================================================
+        for s in SEASONS:
+            for l in LOAD_ZONES:
+                elec_demand = DEMAND_DATA[s, l][0]
+                heat_demand = DEMAND_DATA[s, l][1] * growth * red_factor
+                cool_demand = DEMAND_DATA[s, l][2] * growth * red_factor
 
-om_rows = []
+                pv_output = am.value(model.x_tech["PV", t, s, l])
+                chp_elec = am.value(model.p_chp[t, s, l])
+                chp_heat = am.value(model.q_chp[t, s, l])
+                chp_gas = am.value(model.chp_gas[t, s, l])
+                boiler_heat = am.value(model.x_tech["Boiler", t, s, l])
+                boiler_gas = boiler_heat / BOILER_EFF
+                split_cooling = am.value(model.x_tech["SplitAC", t, s, l])
+                split_elec = split_cooling / SPLITAC_COP
+                ewh_heat = am.value(model.x_tech["EWH", t, s, l])
+                ewh_elec = ewh_heat / EWH_EFF
+                elec_purchase = am.value(model.purchased["Elec", t, s, l])
+                gas_purchase = am.value(model.purchased["Gas", t, s, l])
 
-for t in years:
+                operation_rows.append({
+                    "Year": t,
+                    "Season": s,
+                    "Load Zone": l,
+                    "Electricity Demand": elec_demand,
+                    "Heat Demand": heat_demand,
+                    "Cooling Demand": cool_demand,
+                    "PV Electricity Output": pv_output,
+                    "CHP Electricity Output": chp_elec,
+                    "CHP Heat Output": chp_heat,
+                    "CHP Gas Input": chp_gas,
+                    "Boiler Heat Output": boiler_heat,
+                    "Boiler Gas Input": boiler_gas,
+                    "SplitAC Cooling Output": split_cooling,
+                    "SplitAC Electricity Input": split_elec,
+                    "EWH Heat Output": ewh_heat,
+                    "EWH Electricity Input": ewh_elec,
+                    "Electricity Purchase": elec_purchase,
+                    "Gas Purchase": gas_purchase,
+                    "CHP ON": am.value(model.u_chp_on[t, s, l]),
+                })
+    operations_df = pd.DataFrame(operation_rows)
 
-    for tech in techs:
+    op_cost_rows = []
+    for t in YEARS:
+        discount_factor = 1 / (1 + DISCOUNT_RATE) ** t
+        for s in SEASONS:
+            days = DAYS_PER_SEASON[s]
+            for l in LOAD_ZONES:
+                chp_elec = am.value(model.p_chp[t, s, l])
+                chp_heat = am.value(model.q_chp[t, s, l])
+                chp_gas = am.value(model.chp_gas[t, s, l])
+                chp_cost = chp_gas * GRID_PRICE["Gas"] * days * discount_factor
+                op_cost_rows.append({
+                    "Year": t,
+                    "Season": s,
+                    "Load Zone": l,
+                    "Technology": "CHP",
+                    "Electricity Output": chp_elec,
+                    "Heat Output": chp_heat,
+                    "Cooling Output": 0,
+                    "Electricity Input": 0,
+                    "Gas Input": chp_gas,
+                    "Operating Cost": chp_cost,
+                })
 
-        active_cap = sum(
-            am.value(model.y_tech[tech, w])
-            for w in years
-            if w <= t and t < w + lifespan[tech]
+                boiler_heat = am.value(model.x_tech["Boiler", t, s, l])
+                boiler_gas = boiler_heat / BOILER_EFF
+                boiler_cost = boiler_gas * GRID_PRICE["Gas"] * days * discount_factor
+                op_cost_rows.append({
+                    "Year": t,
+                    "Season": s,
+                    "Load Zone": l,
+                    "Technology": "Boiler",
+                    "Electricity Output": 0,
+                    "Heat Output": boiler_heat,
+                    "Cooling Output": 0,
+                    "Electricity Input": 0,
+                    "Gas Input": boiler_gas,
+                    "Operating Cost": boiler_cost,
+                })
+
+                split_cooling = am.value(model.x_tech["SplitAC", t, s, l])
+                split_elec = split_cooling / SPLITAC_COP
+                split_cost = split_elec * GRID_PRICE["Elec"] * days * discount_factor
+                op_cost_rows.append({
+                    "Year": t,
+                    "Season": s,
+                    "Load Zone": l,
+                    "Technology": "SplitAC",
+                    "Electricity Output": 0,
+                    "Heat Output": 0,
+                    "Cooling Output": split_cooling,
+                    "Electricity Input": split_elec,
+                    "Gas Input": 0,
+                    "Operating Cost": split_cost,
+                })
+
+                ewh_heat = am.value(model.x_tech["EWH", t, s, l])
+                ewh_elec = ewh_heat / EWH_EFF
+                ewh_cost = ewh_elec * GRID_PRICE["Elec"] * days * discount_factor
+                op_cost_rows.append({
+                    "Year": t,
+                    "Season": s,
+                    "Load Zone": l,
+                    "Technology": "EWH",
+                    "Electricity Output": 0,
+                    "Heat Output": ewh_heat,
+                    "Cooling Output": 0,
+                    "Electricity Input": 0,
+                    "Gas Input": 0,
+                    "Operating Cost": ewh_cost,
+                })
+
+                pv_output = am.value(model.x_tech["PV", t, s, l])
+                op_cost_rows.append({
+                    "Year": t,
+                    "Season": s,
+                    "Load Zone": l,
+                    "Technology": "PV",
+                    "Electricity Output": pv_output,
+                    "Heat Output": 0,
+                    "Cooling Output": 0,
+                    "Electricity Input": 0,
+                    "Gas Input": 0,
+                    "Operating Cost": 0,
+                })
+    op_cost_df = pd.DataFrame(op_cost_rows)
+
+    grid_rows = []
+    for c in GRID_CARRIERS:
+        total_purchase = sum(am.value(model.purchased[c, t, s, l]) for t in YEARS for s in SEASONS for l in LOAD_ZONES)
+        total_cost = sum(
+            (1 / (1 + DISCOUNT_RATE) ** t)
+            * DAYS_PER_SEASON[s]
+            * am.value(model.purchased[c, t, s, l])
+            * GRID_PRICE[c]
+            for t in YEARS for s in SEASONS for l in LOAD_ZONES
         )
-
-        used_cap = am.value(
-            model.active_cap_used[tech, t]
-        )
-
-        om_paid = (
-            maint_cost[tech]
-            * used_cap
-        )
-
-        discounted_om = (
-            om_paid
-            *
-            (1 / (1 + discount_rate) ** t)
-        )
-
-        om_rows.append({
-
-            'Year': t,
-            'Technology': tech,
-
-            'Installed Active Capacity':
-                active_cap,
-
-            'Used Capacity Paying O&M':
-                used_cap,
-
-            'O&M Cost':
-                om_paid,
-
-            'Discounted O&M Cost':
-                discounted_om
+        grid_rows.append({
+            "Carrier": c,
+            "Subscribed": am.value(model.u_grid[c]),
+            "Subscription Cost": am.value(model.u_grid[c]) * SUB_COST[c],
+            "Total Purchased": total_purchase,
+            "Total Purchase Cost": total_cost,
         })
-
-om_df = pd.DataFrame(om_rows)
-
-# =========================================================
-# DETAILED OPERATIONS
-# =========================================================
-
-operation_rows = []
-
-for t in years:
-
-    growth = (1 + demand_growth) ** (t - 1)
-
-    # --- Efficiency Reduction Factor for Result Mapping ---
-    red_factor = 1.0
-    if enable_efficiency_tech and t >= 5:
-        red_factor = 0.8 ** (t - 4)
-    # ------------------------------------------------------
-
-    for s in seasons:
-
-        for l in load_zones:
-
-            # -------------------------------------------------
-            # DEMANDS
-            # -------------------------------------------------
-
-            elec_demand = demand_data[s, l][0]
-
-            heat_demand = (
-                demand_data[s, l][1]
-                * growth
-                * red_factor
-            )
-
-            cool_demand = (
-                demand_data[s, l][2]
-                * growth
-                * red_factor
-            )
-
-            # -------------------------------------------------
-            # PV
-            # -------------------------------------------------
-
-            pv_output = am.value(
-                model.x_tech['PV', t, s, l]
-            )
-
-            # -------------------------------------------------
-            # CHP
-            # -------------------------------------------------
-
-            chp_elec = am.value(
-                model.p_chp[t, s, l]
-            )
-
-            chp_heat = am.value(
-                model.q_chp[t, s, l]
-            )
-
-            chp_gas = am.value(
-                model.chp_gas[t, s, l]
-            )
-
-            # -------------------------------------------------
-            # Boiler
-            # -------------------------------------------------
-
-            boiler_heat = am.value(
-                model.x_tech['Boiler', t, s, l]
-            )
-
-            boiler_gas = (
-                boiler_heat / boiler_eff
-            )
-
-            # -------------------------------------------------
-            # Split AC
-            # -------------------------------------------------
-
-            split_cooling = am.value(
-                model.x_tech['SplitAC', t, s, l]
-            )
-
-            split_elec = (
-                split_cooling / splitac_cop
-            )
-
-            # -------------------------------------------------
-            # EWH
-            # -------------------------------------------------
-
-            ewh_heat = am.value(
-                model.x_tech['EWH', t, s, l]
-            )
-
-            ewh_elec = (
-                ewh_heat / ewh_eff
-            )
-
-            # -------------------------------------------------
-            # GRID PURCHASES
-            # -------------------------------------------------
-
-            elec_purchase = am.value(
-                model.purchased['Elec', t, s, l]
-            )
-
-            gas_purchase = am.value(
-                model.purchased['Gas', t, s, l]
-            )
-
-            operation_rows.append({
-
-                'Year': t,
-                'Season': s,
-                'Load Zone': l,
-
-                # DEMANDS
-                'Electricity Demand':
-                    elec_demand,
-
-                'Heat Demand':
-                    heat_demand,
-
-                'Cooling Demand':
-                    cool_demand,
-
-                # PV
-                'PV Electricity Output':
-                    pv_output,
-
-                # CHP
-                'CHP Electricity Output':
-                    chp_elec,
-
-                'CHP Heat Output':
-                    chp_heat,
-
-                'CHP Gas Input':
-                    chp_gas,
-
-                # Boiler
-                'Boiler Heat Output':
-                    boiler_heat,
-
-                'Boiler Gas Input':
-                    boiler_gas,
-
-                # Split AC
-                'SplitAC Cooling Output':
-                    split_cooling,
-
-                'SplitAC Electricity Input':
-                    split_elec,
-
-                # EWH
-                'EWH Heat Output':
-                    ewh_heat,
-
-                'EWH Electricity Input':
-                    ewh_elec,
-
-                # Grid
-                'Electricity Purchase':
-                    elec_purchase,
-
-                'Gas Purchase':
-                    gas_purchase,
-
-                # CHP STATUS
-                'CHP ON':
-                    am.value(
-                        model.u_chp_on[t, s, l]
-                    )
-            })
-
-operations_df = pd.DataFrame(operation_rows)
-
-# =========================================================
-# OPERATIONAL COST DETAILS
-# =========================================================
-
-op_cost_rows = []
-
-for t in years:
-
-    discount_factor = (
-        1 / (1 + discount_rate) ** t
-    )
-
-    for s in seasons:
-
-        days = days_per_season[s]
-
-        for l in load_zones:
-
-            # =================================================
-            # CHP
-            # =================================================
-
-            chp_elec = am.value(
-                model.p_chp[t, s, l]
-            )
-
-            chp_heat = am.value(
-                model.q_chp[t, s, l]
-            )
-
-            chp_gas = am.value(
-                model.chp_gas[t, s, l]
-            )
-
-            chp_cost = (
-                chp_gas
-                *
-                grid_price['Gas']
-                *
-                days
-                *
-                discount_factor
-            )
-
-            op_cost_rows.append({
-
-                'Year': t,
-                'Season': s,
-                'Load Zone': l,
-                'Technology': 'CHP',
-
-                'Electricity Output':
-                    chp_elec,
-
-                'Heat Output':
-                    chp_heat,
-
-                'Cooling Output':
-                    0,
-
-                'Electricity Input':
-                    0,
-
-                'Gas Input':
-                    chp_gas,
-
-                'Operating Cost':
-                    chp_cost
-            })
-
-            # =================================================
-            # BOILER
-            # =================================================
-
-            boiler_heat = am.value(
-                model.x_tech['Boiler', t, s, l]
-            )
-
-            boiler_gas = (
-                boiler_heat / boiler_eff
-            )
-
-            boiler_cost = (
-                boiler_gas
-                *
-                grid_price['Gas']
-                *
-                days
-                *
-                discount_factor
-            )
-
-            op_cost_rows.append({
-
-                'Year': t,
-                'Season': s,
-                'Load Zone': l,
-                'Technology': 'Boiler',
-
-                'Electricity Output':
-                    0,
-
-                'Heat Output':
-                    boiler_heat,
-
-                'Cooling Output':
-                    0,
-
-                'Electricity Input':
-                    0,
-
-                'Gas Input':
-                    boiler_gas,
-
-                'Operating Cost':
-                    boiler_cost
-            })
-
-            # =================================================
-            # SPLIT AC
-            # =================================================
-
-            split_cooling = am.value(
-                model.x_tech['SplitAC', t, s, l]
-            )
-
-            split_elec = (
-                split_cooling / splitac_cop
-            )
-
-            split_cost = (
-                split_elec
-                *
-                grid_price['Elec']
-                *
-                days
-                *
-                discount_factor
-            )
-
-            op_cost_rows.append({
-
-                'Year': t,
-                'Season': s,
-                'Load Zone': l,
-                'Technology': 'SplitAC',
-
-                'Electricity Output':
-                    0,
-
-                'Heat Output':
-                    0,
-
-                'Cooling Output':
-                    split_cooling,
-
-                'Electricity Input':
-                    split_elec,
-
-                'Gas Input':
-                    0,
-
-                'Operating Cost':
-                    split_cost
-            })
-
-            # =================================================
-            # EWH
-            # =================================================
-
-            ewh_heat = am.value(
-                model.x_tech['EWH', t, s, l]
-            )
-
-            ewh_elec = (
-                ewh_heat / ewh_eff
-            )
-
-            ewh_cost = (
-                ewh_elec
-                *
-                grid_price['Elec']
-                *
-                days
-                *
-                discount_factor
-            )
-
-            op_cost_rows.append({
-
-                'Year': t,
-                'Season': s,
-                'Load Zone': l,
-                'Technology': 'EWH',
-
-                'Electricity Output':
-                    0,
-
-                'Heat Output':
-                    ewh_heat,
-
-                'Cooling Output':
-                    0,
-
-                'Electricity Input':
-                    0,
-
-                'Gas Input':
-                    0,
-
-                'Operating Cost':
-                    ewh_cost
-            })
-
-            # =================================================
-            # PV
-            # =================================================
-
-            pv_output = am.value(
-                model.x_tech['PV', t, s, l]
-            )
-
-            op_cost_rows.append({
-
-                'Year': t,
-                'Season': s,
-                'Load Zone': l,
-                'Technology': 'PV',
-
-                'Electricity Output':
-                    pv_output,
-
-                'Heat Output':
-                    0,
-
-                'Cooling Output':
-                    0,
-
-                'Electricity Input':
-                    0,
-
-                'Gas Input':
-                    0,
-
-                'Operating Cost':
-                    0
-            })
-
-op_cost_df = pd.DataFrame(op_cost_rows)
-
-# =========================================================
-# GRID SUBSCRIPTION DETAILS
-# =========================================================
-
-grid_rows = []
-
-for c in grid_carriers:
-
-    total_purchase = sum(
-        am.value(model.purchased[c, t, s, l])
-        for t in years
-        for s in seasons
-        for l in load_zones
-    )
-
-    total_cost = sum(
-
-        (
-            1 / (1 + discount_rate) ** t
-        )
-
-        *
-
-        days_per_season[s]
-
-        *
-
-        am.value(model.purchased[c, t, s, l])
-
-        *
-
-        grid_price[c]
-
-        for t in years
-        for s in seasons
-        for l in load_zones
-    )
-
-    grid_rows.append({
-
-        'Carrier': c,
-
-        'Subscribed':
-            am.value(model.u_grid[c]),
-
-        'Subscription Cost':
-            (
-                am.value(model.u_grid[c])
-                * sub_cost[c]
-            ),
-
-        'Total Purchased':
-            total_purchase,
-
-        'Total Purchase Cost':
-            total_cost
-    })
-
-grid_df = pd.DataFrame(grid_rows)
-
-# =========================================================
-# DETAILED EMISSIONS EXPORT
-# =========================================================
-
-emissions_data = []
-for t in years:
-    for s in seasons:
-        for l in load_zones:
-            elec_purchased = am.value(model.purchased['Elec', t, s, l])
-            gas_purchased = am.value(model.purchased['Gas', t, s, l])
-            elec_emissions_per_day = elec_purchased * ELEC_EMISSION_FACTOR
-            gas_emissions_per_day = gas_purchased * GAS_EMISSION_FACTOR
-            total_period_emissions = (elec_emissions_per_day + gas_emissions_per_day) * days_per_season[s]
-            emissions_data.append({
-                'Year': t,
-                'Season': s,
-                'Load Zone': l,
-                'Electricity Purchased (kWh)': elec_purchased,
-                'Gas Purchased (kWh)': gas_purchased,
-                'Electricity Emissions (tons CO2/day)': elec_emissions_per_day,
-                'Gas Emissions (tons CO2/day)': gas_emissions_per_day,
-                'Total Period Emissions (tons CO2)': total_period_emissions
-            })
-detailed_emissions_df = pd.DataFrame(emissions_data)
-
-
-# =========================================================
-# EXPORT TO EXCEL
-# =========================================================
-
-excel_file = 'energy_system_results_FULL.xlsx'
-
-# Round down any number less than 0.000001 (1e-6) to 0 across all DataFrames
-# Using .map() instead of .applymap() to avoid deprecation warnings
-objective_breakdown_df = objective_breakdown_df.map(lambda x: 0 if isinstance(x, (int, float)) and x < 1e-6 else x)
-capacity_df = capacity_df.map(lambda x: 0 if isinstance(x, (int, float)) and x < 1e-6 else x)
-om_df = om_df.map(lambda x: 0 if isinstance(x, (int, float)) and x < 1e-6 else x)
-operations_df = operations_df.map(lambda x: 0 if isinstance(x, (int, float)) and x < 1e-6 else x)
-op_cost_df = op_cost_df.map(lambda x: 0 if isinstance(x, (int, float)) and x < 1e-6 else x)
-grid_df = grid_df.map(lambda x: 0 if isinstance(x, (int, float)) and x < 1e-6 else x)
-detailed_emissions_df = detailed_emissions_df.map(lambda x: 0 if isinstance(x, (int, float)) and x < 1e-6 else x)
-
-with pd.ExcelWriter(
-    excel_file,
-    engine='openpyxl'
-) as writer:
-
-    objective_breakdown_df.to_excel(
-        writer,
-        sheet_name='Objective Breakdown',
-        index=False
-    )
-
-    capacity_df.to_excel(
-        writer,
-        sheet_name='Installed Capacity',
-        index=False
-    )
-
-    om_df.to_excel(
-        writer,
-        sheet_name='Yearly O&M Costs',
-        index=False
-    )
-
-    operations_df.to_excel(
-        writer,
-        sheet_name='Detailed Operations',
-        index=False
-    )
-
-    op_cost_df.to_excel(
-        writer,
-        sheet_name='Operational Costs',
-        index=False
-    )
-
-    grid_df.to_excel(
-        writer,
-        sheet_name='Grid Subscription',
-        index=False
-    )
-
-    detailed_emissions_df.to_excel(
-        writer,
-        sheet_name='Detailed Emissions',
-        index=False
-    )
-
-print(f"\nResults exported to: {excel_file}")
+    grid_df = pd.DataFrame(grid_rows)
+
+    emissions_data = []
+    for t in YEARS:
+        for s in SEASONS:
+            for l in LOAD_ZONES:
+                elec_purchased = am.value(model.purchased["Elec", t, s, l])
+                gas_purchased = am.value(model.purchased["Gas", t, s, l])
+                elec_emissions_per_day = elec_purchased * ELEC_EMISSION_FACTOR
+                gas_emissions_per_day = gas_purchased * GAS_EMISSION_FACTOR
+                total_period_emissions = (elec_emissions_per_day + gas_emissions_per_day) * DAYS_PER_SEASON[s]
+                emissions_data.append({
+                    "Year": t,
+                    "Season": s,
+                    "Load Zone": l,
+                    "Electricity Purchased (kWh)": elec_purchased,
+                    "Gas Purchased (kWh)": gas_purchased,
+                    "Electricity Emissions (tons CO2/day)": elec_emissions_per_day,
+                    "Gas Emissions (tons CO2/day)": gas_emissions_per_day,
+                    "Total Period Emissions (tons CO2)": total_period_emissions,
+                })
+    detailed_emissions_df = pd.DataFrame(emissions_data)
+
+    return {
+        "objective_breakdown": _zero_small_values(objective_breakdown_df),
+        "capacity": _zero_small_values(capacity_df),
+        "om": _zero_small_values(om_df),
+        "operations": _zero_small_values(operations_df),
+        "op_cost": _zero_small_values(op_cost_df),
+        "grid": _zero_small_values(grid_df),
+        "emissions": _zero_small_values(detailed_emissions_df),
+    }
+
+
+def export_results(results):
+    with pd.ExcelWriter(OUTPUT_FILE, engine="openpyxl") as writer:
+        results["objective_breakdown"].to_excel(writer, sheet_name="Objective Breakdown", index=False)
+        results["capacity"].to_excel(writer, sheet_name="Installed Capacity", index=False)
+        results["om"].to_excel(writer, sheet_name="Yearly O&M Costs", index=False)
+        results["operations"].to_excel(writer, sheet_name="Detailed Operations", index=False)
+        results["op_cost"].to_excel(writer, sheet_name="Operational Costs", index=False)
+        results["grid"].to_excel(writer, sheet_name="Grid Subscription", index=False)
+        results["emissions"].to_excel(writer, sheet_name="Detailed Emissions", index=False)
+
+
+def main():
+    model = build_model()
+    solve_model(model)
+    results = summarize_results(model)
+    export_results(results)
+
+    print("\n========================================")
+    print("OPTIMIZATION COMPLETED")
+    print("========================================")
+    print(f"\nObjective Value = {am.value(model.obj):,.2f}")
+    print(f"\nResults exported to: {OUTPUT_FILE}")
+
+
+if __name__ == "__main__":
+    main()
